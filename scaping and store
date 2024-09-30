@@ -1,0 +1,128 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+import time
+import pandas as pd
+from bs4 import BeautifulSoup
+
+# Set up Chrome options
+chrome_options = Options()
+chrome_options.add_argument('--headless')  
+
+# Path to your chromedriver executable
+webdriver_path = r'C:\WebDrivers\chromedriver.exe'  # Update with the correct path
+
+def setup_driver():
+    return webdriver.Chrome(service=Service(executable_path=webdriver_path), options=chrome_options)
+
+def extract_announcements_table(driver):
+    page_source = driver.page_source
+    soup = BeautifulSoup(page_source, 'html.parser')
+    
+    main_container = soup.find('div', class_='main_container')
+    if not main_container:
+        print("Main container not found.")
+        return None
+    
+    right_part_section = main_container.find('div', class_='rightPart')
+    if not right_part_section:
+        print("Right part section not found.")
+        return None
+    
+    widget_div = right_part_section.find('div', class_='dataWidgetName', id='dataDisplay')
+    if not widget_div:
+        print("Widget section not found.")
+        return None
+    
+    data_container = widget_div.find('div', class_='dataContainer', attrs={'data-curpg': '1'})
+    if not data_container:
+        print("Data container not found.")
+        return None
+    
+    datalists = data_container.find_all('div', class_='dataList')
+    if not datalists:
+        print("Datalist not found.")
+        return None
+    
+    data = []
+    for datalist in datalists:
+        stocks = datalist.find_all('ul')
+        for stock in stocks:
+            date_elem = stock.find_all('li')[0]
+            company_name_elem = stock.find('a')
+            announcement_elem = stock.find_all('li')[2]
+            
+            date = date_elem.text.strip() if date_elem else 'N/A'
+            company_name = company_name_elem.text.strip() if company_name_elem else 'N/A'
+            announcement = announcement_elem.text.strip() if announcement_elem else 'N/A'
+            
+            if any(term in announcement.lower() for term in ['split', 'bonus', 'rights', 'dividend']):
+                data.append([date, company_name, announcement])
+    
+    return data
+
+def close_popups(driver):
+    try:
+        # Close the soft wall overlay
+        overlay = driver.find_element(By.ID, 'softWall')
+        driver.execute_script("arguments[0].style.display = 'none';", overlay)
+    except:
+        pass
+
+    try:
+        # Close the primeOffers popup
+        prime_offers = driver.find_element(By.CLASS_NAME, 'primeOffers')
+        driver.execute_script("arguments[0].style.display = 'none';", prime_offers)
+    except:
+        pass
+
+def scrape_announcements(base_url, start_page, end_page):
+    driver = setup_driver()
+    all_data = []
+
+    try:
+        for page_number in range(start_page, end_page + 1):
+            url = base_url.replace("pageno-1", f"pageno-{page_number}")
+            driver.get(url)
+            time.sleep(5)  # Wait for the page to load
+            close_popups(driver)
+            data = extract_announcements_table(driver)
+            if data:
+                all_data.extend(data)
+                print(f"Page {page_number} data pulled successfully.")
+            else:
+                print(f"No relevant data found on page {page_number}.")
+            
+            # Handle pagination if the 'Next' button is present and clickable
+            try:
+                next_button = driver.find_element(By.CLASS_NAME, 'pg_next')
+                if 'disable' in next_button.get_attribute('class'):
+                    print("Next button is disabled. Stopping.")
+                    break  # Exit loop if the "pg_next" button is disabled
+            except Exception as e:
+                print("Next button not found or another error occurred:", e)
+                # If next button is not found, assume that the last page is reached
+                break
+
+    finally:
+        driver.quit()
+    
+    if all_data:
+        df = pd.DataFrame(all_data, columns=['Date', 'Company Name', 'Announcement'])
+        return df
+    else:
+        return None
+
+# Base URL of the page to scrape
+base_url = 'https://economictimes.indiatimes.com/marketstats/exchange-47,pageno-1,pid-20.cms'
+
+# Run the scraping
+announcements_df = scrape_announcements(base_url, start_page=1, end_page=315)
+
+# Optional: Save the table to a CSV file
+if announcements_df is not None:
+    announcements_df.to_csv("announcements.csv", index=False)
+    print("Data saved to announcements.csv")
+else:
+    print("No data found.")
